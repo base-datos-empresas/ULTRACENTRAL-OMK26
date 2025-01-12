@@ -140,10 +140,18 @@ def process_csv(file_path, exclusiones):
                 links = social_links.get(col, [])
                 df.at[index, col] = ", ".join(links)
 
-        # Guardar el CSV procesado en la carpeta 'Publicar'
-        output_file = os.path.join(OUTPUT_FOLDER, os.path.basename(file_path))
-        df.to_csv(output_file, index=False)
-        print(Fore.GREEN + f"Archivo procesado guardado en: {output_file}")
+        # Construir el nombre del archivo de salida
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        csv_output_file = os.path.join(OUTPUT_FOLDER, f"{base_name}-Central-Completed.csv")
+        excel_output_file = os.path.join(OUTPUT_FOLDER, f"{base_name}-Central-Completed.xlsx")
+
+        # Guardar en CSV
+        df.to_csv(csv_output_file, index=False)
+        print(Fore.GREEN + f"Archivo CSV procesado guardado en: {csv_output_file}")
+
+        # Guardar en Excel
+        df.to_excel(excel_output_file, index=False, engine="openpyxl")
+        print(Fore.GREEN + f"Archivo Excel procesado guardado en: {excel_output_file}")
 
     except Exception as e:
         print(Fore.RED + f"Error procesando el archivo {file_path}: {e}")
