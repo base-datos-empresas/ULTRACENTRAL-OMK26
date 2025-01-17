@@ -13,6 +13,10 @@ OUTPUT_FOLDER = "Publicar"
 EXCLUSIONES_FOLDER = "xclusiones"
 DEMO_MODE = False  # Determina si se activará el modo demo
 
+VOWEL_MAP = str.maketrans("aeiouAEIOU", "**********")
+ODD_DIGITS = {"1", "3", "5", "7", "9"}
+
+
 def ensure_folders_exist():
     """
     Garantiza que las carpetas necesarias existan. Si no existen, las crea.
@@ -23,6 +27,7 @@ def ensure_folders_exist():
             os.makedirs(folder, exist_ok=True)
         else:
             print(Fore.GREEN + f"Carpeta '{folder}' encontrada.")
+
 
 def cargar_exclusiones():
     """
@@ -45,6 +50,7 @@ def cargar_exclusiones():
     print(Fore.GREEN + f"Exclusiones cargadas: {len(exclusiones)} palabras clave.")
     return exclusiones
 
+
 def filtrar_emails(emails, exclusiones):
     """
     Filtra los correos electrónicos eliminando aquellos que contienen palabras clave en exclusiones.
@@ -57,6 +63,37 @@ def filtrar_emails(emails, exclusiones):
         else:
             emails_validos.append(email)
     return emails_validos
+
+
+def anonymize_data(value):
+    """
+    Reemplaza el valor con asteriscos seguidos para anonimizarlo.
+    """
+    return "***" if pd.notna(value) else value
+
+
+def create_demo_version(df, output_path):
+    """
+    Crea una versión demo de un archivo DataFrame.
+    """
+    demo_df = df.copy()
+
+    # Renombrar la columna place_id a id
+    if "place_id" in demo_df.columns:
+        demo_df.rename(columns={"place_id": "id"}, inplace=True)
+
+    # Anonimizar las columnas phone, Emails y website
+    for col in ["phone", "Emails", "website"]:
+        if col in demo_df.columns:
+            demo_df[col] = demo_df[col].apply(anonymize_data)
+
+    demo_path_csv = output_path.replace("-Central-Completed", "-Central-Demo")
+    demo_path_excel = demo_path_csv.replace(".csv", ".xlsx")
+
+    demo_df.to_csv(demo_path_csv, index=False)
+    demo_df.to_excel(demo_path_excel, index=False, engine="openpyxl")
+    print(Fore.GREEN + f"Versión demo guardada en: {demo_path_csv} y {demo_path_excel}")
+
 
 def display_menu():
     """
@@ -81,6 +118,7 @@ def display_menu():
             break
         else:
             print(Fore.RED + "Opción inválida. Por favor, ingrese '1' o '2'.")
+
 
 def process_csv(file_path, exclusiones):
     """
@@ -140,6 +178,10 @@ def process_csv(file_path, exclusiones):
                 links = social_links.get(col, [])
                 df.at[index, col] = ", ".join(links)
 
+        # Eliminar la columna 'query' si existe
+        if "query" in df.columns:
+            df.drop(columns=["query"], inplace=True)
+
         # Construir el nombre del archivo de salida
         base_name = os.path.splitext(os.path.basename(file_path))[0]
         csv_output_file = os.path.join(OUTPUT_FOLDER, f"{base_name}-Central-Completed.csv")
@@ -153,8 +195,12 @@ def process_csv(file_path, exclusiones):
         df.to_excel(excel_output_file, index=False, engine="openpyxl")
         print(Fore.GREEN + f"Archivo Excel procesado guardado en: {excel_output_file}")
 
+        # Crear versión demo
+        create_demo_version(df, csv_output_file)
+
     except Exception as e:
         print(Fore.RED + f"Error procesando el archivo {file_path}: {e}")
+
 
 def main():
     """
@@ -187,6 +233,7 @@ def main():
     print(Style.BRIGHT + Fore.CYAN + "============================================================")
     print("Procesamiento completado. Revisa los resultados en la carpeta 'Publicar'.")
     print("============================================================")
+
 
 if __name__ == "__main__":
     main()
