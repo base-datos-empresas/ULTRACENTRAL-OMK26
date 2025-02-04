@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 main.py - Procesador de CSV con validación de emails, API, síntesis de voz y enlaces clicables
-
+pablo febrero
 Este script se encarga de:
 ✔ Verificar y crear las carpetas necesarias.
 ✔ Cargar palabras clave de exclusión desde archivos .txt.
