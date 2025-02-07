@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+pablo febrero
+
 main.py - Procesador de CSV con validación de emails, API, síntesis de voz y enlaces clicables
 pablo febrero
 Este script se encarga de:
