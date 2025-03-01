@@ -1,308 +1,422 @@
-#!/usr/bin/env python3
-"""
-pablo febrero
-
-main.py - Procesador de CSV con validación de emails, API, síntesis de voz y enlaces clicables
-pablo febrero
-Este script se encarga de:
-✔ Verificar y crear las carpetas necesarias.
-✔ Cargar palabras clave de exclusión desde archivos .txt.
-✔ Preguntar al usuario si desea activar la salida de voz.
-✔ Mostrar un menú interactivo para elegir el modo de procesamiento.
-✔ Leer archivos CSV, validar emails con ComprsobadorEmail.py y obtener información de la API.
-✔ Guardar los resultados usando Publicador.py en CSV y Excel, incluyendo una versión demo.
-✔ Mostrar enlaces clicables para abrir los archivos generados (recomendado en iTerm2).
-✔ Proporcionar una experiencia visual y auditiva atractiva en consola con colores, banners mega, barras de progreso y mensajes hablados.
-"""
-
 import os
 import glob
+import json
+import re
 import pandas as pd
+import dns.resolver
+from email_validator import validate_email, EmailNotValidError
 from colorama import Fore, Style, init
-from tqdm import tqdm
-import pyttsx3  # Biblioteca para síntesis de voz
+from crawler_api_php import call_api_php
+import concurrent.futures
 
 # Inicializar colorama para colores en consola
 init(autoreset=True)
 
-# Inicializar el motor de voz
-engine = pyttsx3.init()
-SPEAK_ENABLED = False  # Por defecto desactivado; se preguntará al usuario
-
-
-def speak(text):
-    """Reproduce en voz alta el mensaje dado, si SPEAK_ENABLED es True."""
-    if SPEAK_ENABLED:
-        engine.say(text)
-        engine.runAndWait()
-
-
-def preguntar_voz():
-    """Pregunta al usuario si desea activar la salida de voz."""
-    global SPEAK_ENABLED
-    respuesta = input(Fore.YELLOW + "¿Desea activar la voz? (S/N): ").strip().lower()
-    if respuesta in ("s", "si"):
-        SPEAK_ENABLED = True
-        print(Fore.GREEN + "✅ Salida de voz activada.")
-        speak("La salida de voz ha sido activada.")
-    else:
-        SPEAK_ENABLED = False
-        print(Fore.BLUE + "🔹 Salida de voz desactivada.")
-
-
-def make_clickable_link(file_path, display_text=None):
-    """
-    Devuelve un string con el enlace clicable para el archivo, utilizando secuencias OSC 8.
-
-    Nota: Esto suele funcionar en terminales que soporten OSC 8 (por ejemplo, iTerm2 en macOS).
-
-    Args:
-        file_path (str): Ruta del archivo.
-        display_text (str, opcional): Texto a mostrar. Si no se especifica, se usará la ruta.
-
-    Returns:
-        str: Cadena formateada como enlace clicable.
-    """
-    abs_path = os.path.abspath(file_path)
-    if display_text is None:
-        display_text = file_path
-    # Usamos \033]8;;file://{ruta}\033\\ para iniciar y \033]8;;\033\\ para terminar
-    return f'\033]8;;file://{abs_path}\033\\{display_text}\033]8;;\033\\'
-
-
-# Importar módulos personalizados
-from crawler_api_php import call_api_php  # Asegúrate de tener implementada esta función
-import ComprobadorEmail  # Módulo para validar emails
-import Publicador  # Módulo para guardar archivos finales (procesado y demo)
-
-# Definir carpetas y configuraciones
+# Carpetas de entrada y salida
 INPUT_FOLDER = "1Inputs"
 OUTPUT_FOLDER = "Publicar"
 EXCLUSIONES_FOLDER = "xclusiones"
-DEMO_MODE = False  # Modo demo: procesa solo 20 registros
-VERBOSE = True  # Muestra mensajes de depuración extra
+PROGRESS_FILE = "progress_state.json"
+
+# Modo demo (se selecciona en el menú interactivo)
+DEMO_MODE = False
+
+# Texto legal en inglés para la tercera pestaña, renombrado a "Copyright"
+COPYRIGHT_TEXT = [
+    "Legal Notice",
+    "",
+    "© companiesdata.cloud. All rights reserved.",
+    "Registered with the Department of Culture and Historical Heritage GR-00416-2020.",
+    "https://companiesdata.cloud/",
+    "",
+    "The sources of the data are the official websites of each company.",
+    "We do not handle personal data, therefore LOPD or GDPR do not apply.",
+    "",
+    "The database is non-transferable and cannot be replicated.",
+    "Copying, distribution, or partial or complete publication without express consent is prohibited.",
+    "Legal measures will be taken for copyright infringements.",
+    "",
+    "For more information, please consult our Frequently Asked Questions:",
+    "https://companiesdata.cloud/faq",
+    "",
+    "Reproduction, distribution, public communication, and transformation, in whole or in part,",
+    "of the contents of this database is prohibited without the express authorization of companiesdata.cloud.",
+    "The data has been collected from public sources and complies with current regulations."
+]
 
 
-# ==========================================================
-# FUNCIONES ESTÉTICAS PARA MEJORAR LA CONSOLA
-# ==========================================================
+###############################################################################
+# Función para validar el email (formato y existencia de registros DNS)
+###############################################################################
+def validate_email_address(email):
+    """
+    Valida el formato del email y consulta registros DNS (MX o A) del dominio.
+    Retorna (True, mensaje) si es válido o (False, mensaje) en caso contrario.
+    """
+    try:
+        # Validación de formato con email_validator
+        valid = validate_email(email)
+        # Acceder al email validado usando el atributo recomendado
+        email = valid.email
+    except EmailNotValidError as e:
+        return False, f"Formato inválido: {str(e)}"
 
-def print_banner():
-    """Muestra un banner MEGA llamativo al inicio del programa."""
-    banner = f"""
-{Style.BRIGHT}{Fore.MAGENTA}
-  ███╗   ███╗███████╗ ██████╗ ██╗   ██╗███████╗██╗  ██╗     ██████╗ ███████╗██╗   ██╗
-  ████╗ ████║██╔════╝██╔════╝ ██║   ██║██╔════╝██║  ██║    ██╔════╝ ██╔════╝██║   ██║
-  ██╔████╔██║█████╗  ██║  ███╗██║   ██║█████╗  ███████║    ██║  ███╗█████╗  ██║   ██║
-  ██║╚██╔╝██║██╔══╝  ██║   ██║██║   ██║██╔══╝  ██╔══██║    ██║   ██║██╔══╝  ██║   ██║
-  ██║ ╚═╝ ██║███████╗╚██████╔╝╚██████╔╝███████╗██║  ██║    ╚██████╔╝██║     ╚██████╔╝
-  ╚═╝     ╚═╝╚══════╝ ╚═════╝  ╚═════╝ ╚══════╝╚═╝  ╚═╝     ╚═════╝ ╚═╝      ╚═════╝ 
+    # Extraer dominio
+    try:
+        domain = email.split('@')[-1]
+    except Exception:
+        return False, "No se pudo extraer el dominio"
 
-██████╗ ███████╗███████╗██╗      █████╗ ██╗   ██╗██╗██████╗ 
-██╔══██╗██╔════╝██╔════╝██║     ██╔══██╗██║   ██║██║██╔══██╗
-██║  ██║█████╗  ███████╗██║     ███████║██║   ██║██║██║  ██║
-██║  ██║██╔══╝  ╚════██║██║     ██╔══██║██║   ██║██║██║  ██║
-██████╔╝███████╗███████║███████╗██║  ██║╚██████╔╝██║██████╔╝
-╚═════╝ ╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝╚═════╝ 
+    # Consultar registros MX
+    try:
+        answers = dns.resolver.resolve(domain, 'MX')
+        if answers:
+            return True, "Email válido (MX encontrado)"
+    except Exception:
+        pass
 
-                🔥 Mega Procesador de CSV con Emails y API 🔥
----------------------------------------------------------------
-{Style.RESET_ALL}
-"""
-    print(banner)
-    speak("Bienvenido al Mega Procesador de CSV con Emails y API.")
+    # Si no hay MX, intentar consultar registros A
+    try:
+        answers = dns.resolver.resolve(domain, 'A')
+        if answers:
+            return True, "Email válido (A encontrado)"
+    except Exception:
+        return False, "No se encontraron registros MX ni A para el dominio"
 
-
-def print_section(title):
-    """Imprime una sección destacada con un título llamativo."""
-    print(f"\n{Style.BRIGHT}{Fore.CYAN}🔹 {title} 🔹{Style.RESET_ALL}")
-    speak(title)
+    return False, "Validación DNS fallida"
 
 
-# ==========================================================
-# FUNCIONES PRINCIPALES
-# ==========================================================
-
+###############################################################################
+# Funciones del script de procesamiento CSV
+###############################################################################
 def ensure_folders_exist():
-    """Verifica que existan las carpetas necesarias y las crea si no están presentes."""
-    print_section("Verificando Carpetas Necesarias")
+    """
+    Garantiza que las carpetas necesarias existan. Si no existen, las crea.
+    """
     for folder in [INPUT_FOLDER, OUTPUT_FOLDER, EXCLUSIONES_FOLDER]:
         if not os.path.exists(folder):
-            print(Fore.YELLOW + f"📁 Creando carpeta: {folder}")
+            print(Fore.YELLOW + f"Creando carpeta: {folder}")
             os.makedirs(folder, exist_ok=True)
         else:
-            print(Fore.GREEN + f"✔ Carpeta encontrada: {folder}")
-    speak("Las carpetas necesarias han sido verificadas.")
+            print(Fore.GREEN + f"Carpeta '{folder}' encontrada.")
 
 
 def cargar_exclusiones():
-    """Carga palabras clave de exclusión desde archivos en la carpeta EXCLUSIONES_FOLDER."""
-    print_section("Cargando Palabras Clave de Exclusión")
+    """
+    Carga todas las palabras clave de los archivos en la carpeta 'xclusiones'.
+    Retorna un conjunto con las palabras clave.
+    """
     exclusiones = set()
     if not os.listdir(EXCLUSIONES_FOLDER):
-        print(Fore.RED + "⚠ La carpeta de exclusiones está vacía. No se aplicarán filtros.")
-        speak("Atención, la carpeta de exclusiones está vacía.")
+        print(Fore.RED + f"La carpeta '{EXCLUSIONES_FOLDER}' está vacía. No se aplicarán exclusiones.")
         return exclusiones
 
     for file in os.listdir(EXCLUSIONES_FOLDER):
         file_path = os.path.join(EXCLUSIONES_FOLDER, file)
-        if file.endswith(".txt"):
+        if os.path.isfile(file_path) and file.endswith(".txt"):
             with open(file_path, "r", encoding="utf-8") as f:
                 for line in f:
-                    palabra = line.strip().lower()
+                    palabra = line.strip()
                     if palabra:
-                        exclusiones.add(palabra)
-                        if VERBOSE:
-                            print(Fore.BLUE + f"🔹 Exclusión cargada: {palabra}")
-    print(Fore.GREEN + f"✔ Total exclusiones cargadas: {len(exclusiones)}")
-    speak(f"Se han cargado {len(exclusiones)} exclusiones.")
+                        exclusiones.add(palabra.lower())
+    print(Fore.GREEN + f"Exclusiones cargadas: {len(exclusiones)} palabras clave.")
     return exclusiones
 
 
 def filtrar_emails(emails, exclusiones):
-    """Filtra correos electrónicos usando ComprobadorEmail y exclusiones."""
+    """
+    Filtra los correos electrónicos eliminando aquellos que contienen palabras clave
+    y aquellos que no pasan la validación (formato y DNS).
+    Muestra un mensaje en consola para cada email inválido detectado.
+    """
     emails_validos = []
-    print(Fore.CYAN + "Iniciando validación de correos electrónicos...")
     for email in emails:
-        print(Fore.YELLOW + f"Procesando cadena de email: {email}")
-        validos = ComprobadorEmail.validar_email(email)
-        if not validos:
-            print(Fore.RED + f"⚠ No se encontró email válido en: {email}")
-        for v in validos:
-            if any(exclusion in v.lower() for exclusion in exclusiones):
-                print(Fore.RED + f"⛔ Email excluido (por exclusión): {v}")
-            else:
-                print(Fore.GREEN + f"✔ Email válido: {v}")
-                emails_validos.append(v)
-    print(Fore.CYAN + f"Total de emails válidos: {len(emails_validos)}")
+        # Excluir si contiene alguna palabra clave
+        if any(exclusion in email.lower() for exclusion in exclusiones):
+            print(Fore.RED + f"EMAIL INVÁLIDO DETECTADO (exclusión): {email}")
+            continue
+
+        # Validar formato y registros DNS
+        is_valid, msg = validate_email_address(email)
+        if not is_valid:
+            print(Fore.RED + f"EMAIL INVÁLIDO (validación fallida: {msg}): {email}")
+            continue
+
+        emails_validos.append(email)
     return emails_validos
 
 
+def anonymize_data(value):
+    """
+    Reemplaza el valor con asteriscos para anonimizarlo.
+    """
+    return "***" if pd.notna(value) else value
+
+
+def generate_statistics(df):
+    """
+    Genera un DataFrame con estadísticas basadas en el DataFrame procesado.
+    Estadísticas:
+      - Número de empresas (filas)
+      - Número de teléfonos válidos (columna 'phone')
+      - Número total de emails (columna 'Emails', contando cada email separado por coma)
+      - Listado de categorías únicas (columna 'category', si existe)
+    """
+    num_empresas = len(df)
+
+    num_telefonos = 0
+    if "phone" in df.columns:
+        num_telefonos = df["phone"].astype(str).str.strip().replace("", pd.NA).dropna().shape[0]
+
+    total_emails = 0
+    if "Emails" in df.columns:
+        for entry in df["Emails"].dropna():
+            emails_list = [email.strip() for email in str(entry).split(",") if email.strip() != ""]
+            total_emails += len(emails_list)
+
+    if "category" in df.columns:
+        categorias = df["category"].dropna().unique().tolist()
+    else:
+        categorias = []
+
+    stats = {
+        "Estadística": [
+            "Número de empresas",
+            "Número de teléfonos",
+            "Número de emails",
+            "Listado de categorías"
+        ],
+        "Valor": [
+            num_empresas,
+            num_telefonos,
+            total_emails,
+            ", ".join(categorias) if categorias else "N/A"
+        ]
+    }
+    return pd.DataFrame(stats)
+
+
+def create_demo_version(df, output_path):
+    """
+    Crea una versión demo de un DataFrame, guardando un CSV y un Excel con tres pestañas:
+    Datos, Estadísticas y Copyright.
+    """
+    demo_df = df.copy()
+
+    # Renombrar la columna place_id a id si existe
+    if "place_id" in demo_df.columns:
+        demo_df.rename(columns={"place_id": "id"}, inplace=True)
+
+    # Anonimizar las columnas phone, Emails y website
+    for col in ["phone", "Emails", "website"]:
+        if col in demo_df.columns:
+            demo_df[col] = demo_df[col].apply(anonymize_data)
+
+    demo_path_csv = output_path.replace("-Central-Completed", "-Central-Demo")
+    demo_path_excel = demo_path_csv.replace(".csv", ".xlsx")
+
+    # Guardar CSV (solo datos, ya que CSV no soporta pestañas)
+    demo_df.to_csv(demo_path_csv, index=False)
+    print(Fore.GREEN + f"Archivo demo CSV guardado en: {demo_path_csv}")
+
+    # Guardar Excel con tres pestañas: Datos, Estadísticas y Copyright
+    with pd.ExcelWriter(demo_path_excel, engine="openpyxl") as writer:
+        demo_df.to_excel(writer, index=False, sheet_name="Datos")
+        stats_df = generate_statistics(demo_df)
+        stats_df.to_excel(writer, index=False, sheet_name="Estadísticas")
+        copyright_df = pd.DataFrame({"Copyright": COPYRIGHT_TEXT})
+        copyright_df.to_excel(writer, index=False, sheet_name="Copyright")
+    print(Fore.GREEN + f"Archivo demo Excel guardado en: {demo_path_excel}")
+
+
 def display_menu():
-    """Muestra el menú para seleccionar el modo de procesamiento."""
+    """
+    Muestra un menú interactivo para elegir el modo de procesamiento.
+    """
     global DEMO_MODE
     while True:
-        print_section("Seleccionar Modo de Procesamiento")
-        print("1️⃣ Procesar todos los registros (modo completo)")
-        print("2️⃣ Procesar solo los primeros 20 registros (modo demo)")
-        choice = input(Fore.YELLOW + "👉 Ingrese su elección (1 o 2): ").strip()
+        print(Style.BRIGHT + Fore.CYAN + "\n============================================================")
+        print("Seleccione el modo de procesamiento:")
+        print("1. Procesar todos los registros (modo completo)")
+        print("2. Procesar solo los primeros 20 registros (modo demo)")
+        print("============================================================")
+        choice = input(Fore.YELLOW + "Ingrese su elección (1 o 2): ").strip()
+
         if choice == "1":
             DEMO_MODE = False
-            print(Fore.GREEN + "✅ Procesamiento completo seleccionado.")
-            speak("Modo completo seleccionado.")
+            print(Fore.GREEN + "Procesamiento completo seleccionado.")
             break
         elif choice == "2":
             DEMO_MODE = True
-            print(Fore.BLUE + "🔹 Modo demo activado. Procesando solo 20 registros.")
-            speak("Modo demo activado.")
+            print(Fore.BLUE + "Modo demo seleccionado. Solo se procesarán 20 registros.")
             break
         else:
-            print(Fore.RED + "⚠ Opción inválida. Intente nuevamente.")
-            speak("Opción inválida, por favor intente nuevamente.")
+            print(Fore.RED + "Opción inválida. Por favor, ingrese '1' o '2'.")
 
 
-def procesar_link(link):
+def load_progress():
     """
-    Elimina de un enlace los prefijos 'https://www.' y 'https://' para obtener solo el dominio.
+    Carga el estado de progreso desde el archivo, si existe.
     """
-    if link.startswith("https://www."):
-        return link[len("https://www."):]
-    elif link.startswith("https://"):
-        return link[len("https://"):]
-    return link
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
 
 
-def process_csv(file_path, exclusiones):
-    """Procesa un archivo CSV y guarda los resultados usando Publicador."""
-    print_section(f"Procesando archivo: {file_path}")
+def save_progress(progress):
+    """
+    Guarda el estado de progreso en el archivo.
+    """
+    with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+        json.dump(progress, f, indent=4)
 
+
+def clear_progress():
+    """
+    Elimina el archivo de progreso cuando la tarea se completa.
+    """
+    if os.path.exists(PROGRESS_FILE):
+        os.remove(PROGRESS_FILE)
+
+
+###############################################################################
+# Procesamiento en paralelo: función para procesar una sola URL
+###############################################################################
+def process_single_website(args):
+    """
+    Procesa una única URL:
+      - Llama a la API para obtener información.
+      - Filtra los emails y obtiene los datos de redes sociales.
+    Retorna una tupla: (índice, emails filtrados, diccionario con redes sociales).
+    """
+    index, website, exclusiones = args
+    api_response = call_api_php(website)
+    emails = api_response.get("emails", [])
+    emails_filtrados = filtrar_emails(emails, exclusiones)
+    social_columns = ["Instagram", "Facebook", "YouTube", "LinkedIn", "Twitter", "TikTok", "Pinterest"]
+    social_data = {}
+    for col in social_columns:
+        links = api_response.get("social_links", {}).get(col, [])
+        social_data[col] = ", ".join(links)
+    return index, emails_filtrados, social_data
+
+
+def process_csv(file_path, exclusiones, progress):
+    """
+    Procesa un archivo CSV y escribe los resultados en la carpeta 'Publicar'.
+    Implementa un checkpoint para reanudar el procesamiento en caso de interrupciones.
+    Además, genera un archivo Excel con tres pestañas: Datos, Estadísticas y Copyright.
+    """
+    base_name = os.path.basename(file_path)
+    file_progress = progress.get(base_name, {"last_index": -1})
+    last_index = file_progress.get("last_index", -1)
+
+    print(Fore.YELLOW + f"Procesando archivo: {file_path}")
     try:
         df = pd.read_csv(file_path)
-        print(Fore.BLUE + f"✔ CSV cargado. Total de filas: {len(df)}")
+
+        if "website" not in df.columns:
+            print(Fore.RED + "El archivo no contiene una columna 'website'. Saltando...")
+            return
+
+        valid_websites = []
+        for index, website in enumerate(df["website"]):
+            if isinstance(website, str) and website.strip():
+                valid_websites.append((index, website.strip()))
+            elif not pd.isna(website):
+                print(Fore.RED + f" - Saltando fila {index}: Valor vacío o inválido en 'website'.")
+
+        if DEMO_MODE:
+            valid_websites = valid_websites[:20]
+            print(Fore.BLUE + f"Modo demo activado. Procesando solo los primeros {len(valid_websites)} registros.")
+
+        total = len(valid_websites)
+        print(Fore.BLUE + "\nURLs a procesar:")
+        for pos, (index, website) in enumerate(valid_websites, start=1):
+            print(f" - Registro {pos}/{total} (fila {index}): {website}")
+        print(Fore.BLUE + f"Total URLs válidas a procesar: {total}\n")
+
+        if not valid_websites:
+            print(Fore.RED + "No hay URLs válidas para procesar en este archivo.")
+            return
+
+        # Preparar tareas para procesar en paralelo (solo registros nuevos)
+        tasks = [(index, website, exclusiones) for (index, website) in valid_websites if index > last_index]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            results = list(executor.map(process_single_website, tasks))
+
+        for pos, (index, emails_filtrados, social_data) in enumerate(results, start=1):
+            df.at[index, "Emails"] = ", ".join(emails_filtrados)
+            for col, links in social_data.items():
+                df.at[index, col] = links
+            file_progress["last_index"] = index
+            progress[base_name] = file_progress
+            save_progress(progress)
+            print(Fore.CYAN + f"Progreso: Registro (fila {index}) completado. {pos} de {total} procesados.\n")
+
+        if "query" in df.columns:
+            df.drop(columns=["query"], inplace=True)
+
+        base_output = os.path.splitext(base_name)[0]
+        csv_output_file = os.path.join(OUTPUT_FOLDER, f"{base_output}-Central-Completed.csv")
+        excel_output_file = os.path.join(OUTPUT_FOLDER, f"{base_output}-Central-Completed.xlsx")
+
+        df.to_csv(csv_output_file, index=False)
+        print(Fore.GREEN + f"Archivo CSV procesado guardado en: {csv_output_file}")
+
+        with pd.ExcelWriter(excel_output_file, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Datos")
+            stats_df = generate_statistics(df)
+            stats_df.to_excel(writer, index=False, sheet_name="Estadísticas")
+            copyright_df = pd.DataFrame({"Copyright": COPYRIGHT_TEXT})
+            copyright_df.to_excel(writer, index=False, sheet_name="Copyright")
+        print(Fore.GREEN + f"Archivo Excel procesado guardado en: {excel_output_file}")
+
+        create_demo_version(df, csv_output_file)
+
     except Exception as e:
-        print(Fore.RED + f"⚠ Error al leer el archivo CSV: {e}")
-        speak("Error al leer el archivo CSV.")
-        return
-
-    if "website" not in df.columns:
-        print(Fore.RED + "⚠ Archivo sin columna 'website'. Saltando...")
-        speak("El archivo no contiene la columna website. Se omitirá este archivo.")
-        return
-
-    # Extraer URLs válidas de la columna 'website'
-    valid_websites = [(i, w.strip()) for i, w in enumerate(df["website"]) if isinstance(w, str) and w.strip()]
-    if DEMO_MODE:
-        valid_websites = valid_websites[:20]
-
-    # Definir las redes sociales que queremos procesar
-    social_columns = ["Instagram", "Facebook", "YouTube", "LinkedIn", "Twitter", "TikTok", "Pinterest"]
-
-    # Procesar cada website con barra de progreso
-    for index, website in tqdm(valid_websites, desc="Procesando sitios web", unit="sitio"):
-        try:
-            api_response = call_api_php(website)
-        except Exception as e:
-            print(Fore.RED + f"⚠ Error llamando a la API para {website}: {e}")
-            speak(f"Error llamando a la API para {website}.")
-            api_response = {}  # Asignar diccionario vacío para continuar
-
-        # Extraer y filtrar emails
-        emails = api_response.get("emails", [])
-        emails_filtrados = filtrar_emails(emails, exclusiones)
-        df.at[index, "Emails"] = ", ".join(emails_filtrados)
-        if emails_filtrados:
-            mensaje = f"Para el sitio {website} se encontraron {len(emails_filtrados)} emails válidos."
-            print(Fore.MAGENTA + mensaje)
-            speak(mensaje)
-
-        # Procesar redes sociales (si existen)
-        social_links_dict = api_response.get("social_links", {})
-        for col in social_columns:
-            links = social_links_dict.get(col, [])
-            if links:
-                df.at[index, col] = ", ".join(links)
-                # Procesar cada enlace para eliminar los prefijos antes de hablar
-                processed_links = [procesar_link(link) for link in links]
-                # Formar el mensaje sin listar literalmente la URL completa
-                mensaje_social = f"El sitio {website} tiene en {col}: {', '.join(processed_links)}."
-                print(Fore.MAGENTA + mensaje_social)
-                speak(mensaje_social)
-
-    # Construir nombre base para guardar archivos
-    base_name = os.path.splitext(os.path.basename(file_path))[0]
-    print(Fore.CYAN + f"Llamando a Publicador para guardar archivos finales usando base: '{base_name}'")
-    speak(f"Guardando resultados para {base_name}.")
-    resultados = Publicador.guardar_archivos_finales(df, base_name, OUTPUT_FOLDER)
-
-    print_section("Archivos Generados")
-    # Mostrar enlaces clicables para cada archivo generado
-    for key, path in resultados.items():
-        clickable = make_clickable_link(path, f"{key}: {path}")
-        print(Fore.GREEN + f"✔ {clickable}")
-    speak("El archivo ha sido guardado correctamente.")
+        print(Fore.RED + f"Error procesando el archivo {file_path}: {e}")
 
 
 def main():
-    """Función principal que orquesta todo el proceso."""
-    print_banner()
-    preguntar_voz()  # Preguntar al usuario si desea salida de voz
+    """
+    Lee todos los archivos CSV de la carpeta '1Inputs' y los procesa.
+    Incorpora un mecanismo de checkpointing para reanudar tareas pendientes y muestra el progreso en pantalla.
+    """
+    print(Style.BRIGHT + Fore.CYAN + "============================================================")
+    print("Inicio del procesamiento de CSVs")
+    print("============================================================")
+
     ensure_folders_exist()
     exclusiones = cargar_exclusiones()
     display_menu()
 
+    progress = load_progress()
+    if progress:
+        respuesta = input("Se detectó una tarea pendiente. ¿Desea continuar desde donde quedó? (s/n): ").strip().lower()
+        if respuesta != "s":
+            progress = {}
+            clear_progress()
+            print("Iniciando una nueva tarea desde cero.")
+        else:
+            print("Reanudando la tarea pendiente...")
+
     csv_files = glob.glob(os.path.join(INPUT_FOLDER, "*.csv"))
     if not csv_files:
-        print(Fore.RED + "⚠ No se encontraron archivos CSV en '1Inputs'.")
-        speak("No se encontraron archivos CSV en la carpeta de entrada.")
+        print(Fore.RED + "No se encontraron archivos CSV en la carpeta '1Inputs'.")
         return
 
-    print_section(f"Se encontraron {len(csv_files)} archivos CSV")
-    speak(f"Se encontraron {len(csv_files)} archivos CSV para procesar.")
     for csv_file in csv_files:
-        process_csv(csv_file, exclusiones)
+        print(Style.BRIGHT + Fore.MAGENTA + "\n------------------------------------------------------------")
+        process_csv(csv_file, exclusiones, progress)
+        print(Style.BRIGHT + Fore.MAGENTA + "------------------------------------------------------------\n")
 
-    print(Fore.GREEN + "\n🎉 ¡Procesamiento completado! Revisa la carpeta 'Publicar'.\n")
-    speak("Procesamiento completado. Revisa la carpeta Publicar.")
+    clear_progress()
+    print(Style.BRIGHT + Fore.CYAN + "============================================================")
+    print("Procesamiento completado. Revisa los resultados en la carpeta 'Publicar'.")
+    print("============================================================")
 
 
 if __name__ == "__main__":
