@@ -1,0 +1,134 @@
+Quiero que crees un proyecto completo llamado ULTRACENTRAL-OMK26 que procese archivos CSV para extraer correos electrónicos y redes sociales, con todas las funcionalidades y módulos que describiré a continuación. Cada archivo debe tener un nombre y ubicación exactos, y debe estar listo para ejecutarse y funcionar sin errores. Deseo un README.md detallado que incluya:
+
+- Un resumen breve y una guía completa de instalación y ejecución,
+- La estructura de archivos con su propósito,
+- Cómo manejar normalización de direcciones si se desea,
+- Explicaciones de cada función principal.
+
+--------------------------------------------------------------------------------
+
+ARQUITECTURA GENERAL
+
+1) Carpeta Principal: ULTRACENTRAL-OMK26
+   - Objetivo: Contendrá todos los archivos y carpetas.
+
+2) Archivos y Carpetas:
+   1. main.py
+      - Punto de entrada al programa.
+      - Crea carpetas de entrada/salida, carga exclusiones, ofrece menú para modo demo o completo.
+      - Escanea “1Inputs” buscando CSV y llama a un procesador de CSV.
+      - Al final, muestra un mensaje de éxito.
+
+   2. configuracion.py
+      - Define rutas globales y parámetros:
+        INPUT_FOLDER = "1Inputs"
+        OUTPUT_FOLDER = "Publicar"
+        EXCLUSIONES_FOLDER = "xclusiones"
+        PROGRESS_FILE = "progress_state.json"
+      - Así centralizamos cualquier ruta y nombre de carpeta.
+
+   3. exclusions.py
+      - Lee los archivos .txt en “xclusiones/”.
+      - Crea y retorna un set de palabras clave para filtrar correos.
+
+   4. email_utils.py
+      - Usa “email_validator” y “dns.resolver” para validar los correos a nivel de formato y DNS.
+      - Funciones:
+        - validate_email_address(email): Retorna (True, mensaje) si el correo es válido, o (False, mensaje) si no.
+        - filtrar_emails(emails, exclusiones): Elimina correos que contengan palabras en “exclusiones” o que no pasen la validación DNS.
+
+   5. crawler_api_php.py
+      - Llama a una API externa en PHP (por ejemplo, https://centralapi.site/apiemailsocial.php).
+      - Define la función call_api_php(domain), que retorna un dict JSON con emails y social_links.
+
+   6. Carpeta processors/
+      - Debe contener un archivo __init__.py (vacío o con un comentario) para que Python lo reconozca como paquete.
+
+      - parallel_api.py
+        - Usa concurrent.futures.ThreadPoolExecutor para procesar sitios web en paralelo.
+        - Función principal: run_parallel_api(valid_websites, exclusiones, max_workers=10).
+          - Invoca process_single_website(args) por cada sitio.
+          - Retorna una lista con (index, emails_filtrados, social_data).
+        - Función process_single_website(args):
+          - Llama a call_api_php para obtener emails y redes.
+          - Filtra correos con filtrar_emails.
+          - Devuelve (index, correos_filtrados, diccionario_con_redes).
+
+      - process_csv.py
+        - Función process_csv(file_path, exclusiones, demo_mode=False).
+        - Lee el CSV con pandas.
+        - Verifica la columna “website” y la filtra.
+        - Si es demo, limita a 20 registros.
+        - Llama a run_parallel_api para extraer correos y redes sociales en paralelo.
+        - Actualiza el DataFrame y llama a guardar_archivos_finales(df, base_name, OUTPUT_FOLDER) (del archivo “Publicador.py”).
+
+   7. Publicador.py
+      - Contiene una lista COLUMN_ORDER con el orden final de columnas, por ejemplo:
+        COLUMN_ORDER = [
+          "name", "main_category", "categories",
+          "Emails", "phone", "website", "Instagram", "Facebook", "YouTube",
+          "LinkedIn", "Twitter", "address", "street", "postal_code",
+          "locality", "province", "country", "rating", "reviews",
+          "is_spending_on_ads", "competitors", "owner_name", "owner_profile_link",
+          "workday_timing", "is_temporarily_closed", "closed_on", "can_claim",
+          "link", "id"
+        ]
+      - Función principal: guardar_archivos_finales(df, base_name, output_folder) que:
+        1) Detecta las iniciales de país en “base_name” (ej. si base_name = "ES-MiArchivo" => "ES").
+        2) Crea una subcarpeta en output_folder con esas iniciales (p.e., Publicar/ES).
+        3) Elimina la columna “query” si existe, renombra place_id a “id” si existe.
+        4) (Opcional) Realizar normalización de direcciones antes de guardar.
+        5) Ordena las columnas con df.reindex(...)
+        6) Guarda el CSV con el sufijo “-CentralCompanies.csv”.
+        7) Devuelve la ruta del archivo creado.
+
+--------------------------------------------------------------------------------
+
+README.md
+- Debe incluir un resumen breve de la finalidad del proyecto.
+- Guía de instalación (pip install colorama email-validator dnspython requests).
+- Explicación de la estructura de archivos y para qué sirve cada uno.
+- Cómo se coordina el flujo principal: main.py → process_csv → Publicador.
+- Sección “Modificaciones Frecuentes”: dónde cambiar rutas, exclusiones, validación de emails, orden de columnas, normalización de direcciones, etc.
+- Un “prompt final” para que alguien pueda recrear este proyecto en ChatGPT.
+
+--------------------------------------------------------------------------------
+
+DETALLES DE NORMALIZACIÓN DE DIRECCIONES (OPCIONAL)
+- Si se quiere, en Publicador.py se podría integrar una función para dividir la columna “address” en “street”, “postal_code”, “locality”, etc.
+- También se podría usar un módulo extra llamado “normalizador_direcciones.py” y llamarlo antes de guardar.
+
+--------------------------------------------------------------------------------
+
+FLUJO ESPERADO
+1. Instalar librerías:
+   pip install colorama email-validator dnspython requests
+
+2. Ubicarse en la carpeta raíz ULTRACENTRAL-OMK26 y ejecutar:
+   python main.py
+
+3. Elegir modo demo o completo.
+
+4. Procesar CSVs en 1Inputs:
+   - Filtrar correos inválidos (con email_utils.py + exclusiones.py).
+   - Llamar a la API PHP (crawler_api_php.py) para extraer redes sociales.
+   - Guardar el resultado final en Publicar/XX con el nombre “ES-algo-CentralCompanies.csv” si el país es ES.
+
+--------------------------------------------------------------------------------
+
+PROMPT FINAL PARA RECREAR EL PROYECTO
+
+"Quiero un proyecto llamado ULTRACENTRAL-OMK26 con la siguiente organización y funcionalidades:
+
+1) main.py como punto de entrada, que orqueste todo, pidiéndome modo demo o completo, y lea los CSV de 1Inputs.
+2) configuracion.py con rutas: INPUT_FOLDER, OUTPUT_FOLDER, EXCLUSIONES_FOLDER, PROGRESS_FILE.
+3) exclusions.py para cargar palabras de exclusión desde xclusiones/*.txt.
+4) email_utils.py con validación de emails (formato y DNS) y filtrado de correos.
+5) crawler_api_php.py para llamar a una API externa que devuelva correos y redes.
+6) Una carpeta 'processors' con __init__.py, parallel_api.py y process_csv.py:
+   - parallel_api.py: concurrent.futures para procesar sitios en paralelo.
+   - process_csv.py: lectura de CSV, llamadas a parallel_api, actualización de DataFrame y llamada a 'Publicador.py'.
+7) Publicador.py para reordenar columnas, clasificar por país (prefijo en base_name) y guardar CSVs con sufijo '-CentralCompanies.csv'.
+8) Un README.md muy detallado, con resumen, estructura de archivos, flujo principal, guía de instalación (pip install colorama email-validator dnspython requests) y un apartado de modificaciones frecuentes. También un prompt final para que cualquiera pueda recrear este proyecto en ChatGPT."
+
+Este proyecto debe ser completamente funcional, permitiendo procesar CSVs ubicados en 1Inputs, filtrando correos con exclusiones, validando emails con DNS, llamando a la API PHP para redes sociales y guardando resultados en Publicar/XX con columnas ordenadas.
