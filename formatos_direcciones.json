@@ -1,0 +1,11 @@
+{
+    "ES": {
+        "pattern": "Calle\\ Trafalgar,?\\s*11380\\s+Tarifa,\\s*Andalucía",
+        "groups": [
+            "street",
+            "postal_code",
+            "locality",
+            "province"
+        ]
+    }
+}
